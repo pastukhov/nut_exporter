@@ -1,0 +1,8 @@
+.github
+.gitignore
+dashboard
+scripts
+.goreleaser.yml
+.release_info.md
+LICENSE
+README.md
