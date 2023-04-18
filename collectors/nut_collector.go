@@ -12,13 +12,19 @@ import (
 )
 
 var deviceLabels = []string{"model", "mfr", "serial", "type", "description", "contact", "location", "part", "macaddr"}
+var batteryLabels = []string{"type", "mfr_date", "voltage_nominal"}
+var driverLabels = []string{"name", "parameter_port", "parameter_synchronous", "version", "version_data", "version_internal"}
+var upsLabels = []string{"firmware", "mfr", "mfr_date", "model", "productid", "serial", "vendorid", "test_result"}
 
 type NutCollector struct {
-	deviceDesc *prometheus.Desc
-	logger     log.Logger
-	opts       *NutCollectorOpts
-	onRegex    *regexp.Regexp
-	offRegex   *regexp.Regexp
+	deviceDesc  *prometheus.Desc
+	batteryDesc *prometheus.Desc
+	driverDesc  *prometheus.Desc
+	upsDesc     *prometheus.Desc
+	logger      log.Logger
+	opts        *NutCollectorOpts
+	onRegex     *regexp.Regexp
+	offRegex    *regexp.Regexp
 }
 
 type NutCollectorOpts struct {
@@ -39,8 +45,24 @@ func NewNutCollector(opts NutCollectorOpts, logger log.Logger) (*NutCollector, e
 		"UPS Device information",
 		deviceLabels, nil,
 	)
+	batteryDesc := prometheus.NewDesc(prometheus.BuildFQName(opts.Namespace, "", "battery_info"),
+		"UPS Battery information",
+		batteryLabels, nil,
+	)
+	driverDesc := prometheus.NewDesc(prometheus.BuildFQName(opts.Namespace, "", "driver_info"),
+		"UPS Driver information",
+		driverLabels, nil,
+	)
+	upsDesc := prometheus.NewDesc(prometheus.BuildFQName(opts.Namespace, "", "ups_info"),
+		"UPS information",
+		upsLabels, nil,
+	)
+
 	if opts.DisableDeviceInfo {
 		deviceDesc = nil
+		batteryDesc = nil
+		driverDesc = nil
+		upsDesc = nil
 	}
 
 	var onRegex, offRegex *regexp.Regexp
@@ -61,11 +83,14 @@ func NewNutCollector(opts NutCollectorOpts, logger log.Logger) (*NutCollector, e
 	}
 
 	collector := &NutCollector{
-		deviceDesc: deviceDesc,
-		logger:     logger,
-		opts:       &opts,
-		onRegex:    onRegex,
-		offRegex:   offRegex,
+		deviceDesc:  deviceDesc,
+		batteryDesc: batteryDesc,
+		driverDesc:  driverDesc,
+		upsDesc:     upsDesc,
+		logger:      logger,
+		opts:        &opts,
+		onRegex:     onRegex,
+		offRegex:    offRegex,
 	}
 
 	if opts.Ups != "" {
@@ -153,9 +178,21 @@ func (c *NutCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	for _, ups := range upsList {
-		device := make(map[string]string)
+		deviceValueMap := make(map[string]string)
+		batteryValueMap := make(map[string]string)
+		driverValueMap := make(map[string]string)
+		upsValueMap := make(map[string]string)
 		for _, label := range deviceLabels {
-			device[label] = ""
+			deviceValueMap[label] = ""
+		}
+		for _, label := range batteryLabels {
+			batteryValueMap[label] = ""
+		}
+		for _, label := range driverLabels {
+			driverValueMap[label] = ""
+		}
+		for _, label := range upsLabels {
+			upsValueMap[label] = ""
 		}
 
 		level.Debug(c.logger).Log(
@@ -163,7 +200,7 @@ func (c *NutCollector) Collect(ch chan<- prometheus.Metric) {
 			"name", ups.Name,
 			"description", ups.Description,
 			"master", ups.Master,
-			"nmumber_of_logins", ups.NumberOfLogins,
+			"number_of_logins", ups.NumberOfLogins,
 		)
 		for i, clientName := range ups.Clients {
 			level.Debug(c.logger).Log("client", i, "name", clientName)
@@ -181,9 +218,14 @@ func (c *NutCollector) Collect(ch chan<- prometheus.Metric) {
 				"maximum_length", variable.MaximumLength,
 				"original_type", variable.OriginalType,
 			)
-			path := strings.Split(variable.Name, ".")
-			if path[0] == "device" {
-				device[path[1]] = fmt.Sprintf("%v", variable.Value)
+			if strings.HasPrefix(variable.Name, "device") {
+				deviceValueMap[strings.ReplaceAll(strings.TrimPrefix(variable.Name, "device."), ".", "_")] = fmt.Sprintf("%v", variable.Value)
+			} else if strings.HasPrefix(variable.Name, "battery") {
+				batteryValueMap[strings.ReplaceAll(strings.TrimPrefix(variable.Name, "battery."), ".", "_")] = fmt.Sprintf("%v", variable.Value)
+			} else if strings.HasPrefix(variable.Name, "driver") {
+				driverValueMap[strings.ReplaceAll(strings.TrimPrefix(variable.Name, "driver."), ".", "_")] = fmt.Sprintf("%v", variable.Value)
+			} else if strings.HasPrefix(variable.Name, "ups") {
+				upsValueMap[strings.ReplaceAll(strings.TrimPrefix(variable.Name, "ups."), ".", "_")] = fmt.Sprintf("%v", variable.Value)
 			}
 
 			/* Done special processing - now get as general as possible and gather all requested or number-like metrics */
@@ -271,11 +313,26 @@ func (c *NutCollector) Collect(ch chan<- prometheus.Metric) {
 
 		// Only provide device info if not disabled
 		if !c.opts.DisableDeviceInfo {
-			deviceValues := []string{}
+			var deviceValues []string
 			for _, label := range deviceLabels {
-				deviceValues = append(deviceValues, device[label])
+				deviceValues = append(deviceValues, deviceValueMap[label])
 			}
 			ch <- prometheus.MustNewConstMetric(c.deviceDesc, prometheus.GaugeValue, float64(1), deviceValues...)
+			var batteryValues []string
+			for _, label := range batteryLabels {
+				batteryValues = append(batteryValues, batteryValueMap[label])
+			}
+			ch <- prometheus.MustNewConstMetric(c.batteryDesc, prometheus.GaugeValue, float64(1), batteryValues...)
+			var driverValues []string
+			for _, label := range driverLabels {
+				driverValues = append(driverValues, driverValueMap[label])
+			}
+			ch <- prometheus.MustNewConstMetric(c.driverDesc, prometheus.GaugeValue, float64(1), driverValues...)
+			var upsValues []string
+			for _, label := range upsLabels {
+				upsValues = append(upsValues, upsValueMap[label])
+			}
+			ch <- prometheus.MustNewConstMetric(c.upsDesc, prometheus.GaugeValue, float64(1), upsValues...)
 		}
 	}
 }
